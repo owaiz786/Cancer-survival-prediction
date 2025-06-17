@@ -10,12 +10,18 @@ from models.deepsurv_model import DeepSurvModel
 from utils.data_preprocessing import preprocess_input
 from utils.shap_explainer import generate_shap_values
 from models.kaplan_meier import KaplanMeierModel
+# --- MODIFICATION START ---
+# 1. Import the robust file processor we developed earlier.
+from utils.file_processor import process_uploaded_file
+# --- MODIFICATION END ---
+
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
 # Load trained models
-MODEL_DIR = os.path.join(os.path.dirname(__file__), 'data/trained_models')
+# NEW and correct line
+MODEL_DIR = os.path.join(os.path.dirname(__file__), 'data', 'trained_models')
 
 # Initialize models
 cox_model = CoxModel(model_path=os.path.join(MODEL_DIR, 'cox_model.pkl'))
@@ -130,8 +136,18 @@ def process_file():
         
         file = request.files['file']
         
-        # Read CSV file
-        df = pd.read_csv(file)
+        # --- MODIFICATION START ---
+        # 2. Use the robust file processing logic instead of the simple pd.read_csv
+        filename = file.filename
+        # Read file content into memory to inspect it
+        file_content = file.read().decode('utf-8')
+
+        # Dynamically determine the ID column for flexibility (e.g., for TCGA data)
+        id_column = 'bcr_patient_barcode' if 'bcr_patient_barcode' in file_content else 'patient_id'
+
+        # Use the robust processor to handle CSV, TSV, or TXT files
+        df = process_uploaded_file(file_content, filename, id_column=id_column)
+        # --- MODIFICATION END ---
         
         # Process each patient in the file
         results = []
@@ -149,12 +165,15 @@ def process_file():
             risk_score = 1 - (rsf_prediction['survival_probability_24m'] / 100)
             
             # Add to results
+            # --- MODIFICATION START ---
+            # 3. Use the dynamically identified id_column
             results.append({
-                'patientId': patient_data.get('patient_id', f"PATIENT-{len(results)+1}"),
+                'patientId': patient_data.get(id_column, f"PATIENT-{len(results)+1}"),
                 'survivalProbability': rsf_prediction['survival_probability_24m'] / 100,
                 'riskScore': risk_score,
                 'predictedSurvivalMonths': rsf_prediction['median_survival']
             })
+            # --- MODIFICATION END ---
         
         # Calculate summary statistics
         high_risk = sum(1 for r in results if r['riskScore'] > 0.6)
@@ -167,7 +186,7 @@ def process_file():
             'totalPatients': len(results),
             'processedAt': pd.Timestamp.now().isoformat(),
             'summary': {
-                'averageSurvivalMonths': np.mean([r['predictedSurvivalMonths'] for r in results]),
+                'averageSurvivalMonths': np.mean([r['predictedSurvivalMonths'] for r in results]) if results else 0,
                 'highRiskPatients': high_risk,
                 'mediumRiskPatients': medium_risk,
                 'lowRiskPatients': low_risk
@@ -184,6 +203,8 @@ def process_file():
         return jsonify(response)
     
     except Exception as e:
+        # Log the error for better debugging on the server side
+        print(f"Error during file processing: {e}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
